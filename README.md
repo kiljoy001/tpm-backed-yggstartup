@@ -1,4 +1,4 @@
-#TPM-Secured Yggdrasil Launcher
+TPM-Secured Yggdrasil Launcher
 A security-enhanced deployment tool that protects Yggdrasil networking keys using Trusted Platform Module (TPM) hardware.
 Features
 
