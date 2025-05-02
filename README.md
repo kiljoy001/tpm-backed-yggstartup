@@ -2,6 +2,14 @@
 
 A security-enhanced deployment tool that protects Yggdrasil networking keys using Trusted Platform Module (TPM) hardware.
 
+## Requirements
+
+* Linux system with TPM 2.0 hardware
+* `tpm2-tools` package installed
+* `yggdrasil` networking package
+* Bash shell
+* Write access to create `/tpmdata` directory or configure an alternative path
+
 ## Features
 
 * **Hardware Security**: Stores private keys securely in TPM hardware rather than on disk
