@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # TPM-Secured Yggdrasil Launcher - Fixed Version
-# 
+#
 # This script provides enhanced security for Yggdrasil by:
 # - Storing private keys in TPM hardware
 # - Using in-memory configuration only
@@ -23,7 +23,7 @@ chmod 600 "$TEMP_KEY_FILE"
 acquire_lock() {
     local timeout=30
     local count=0
-    
+
     while ! mkdir "$LOCK_FILE" 2>/dev/null; do
         if [[ $count -ge $timeout ]]; then
             echo "Could not acquire lock after ${timeout}s"
@@ -33,7 +33,7 @@ acquire_lock() {
         sleep 1
         ((count++))
     done
-    
+
     # Store PID for cleanup
     echo $$ > "$LOCK_FILE/pid"
     trap 'rm -rf "$LOCK_FILE" 2>/dev/null || true' EXIT
@@ -108,12 +108,12 @@ read_metadata() {
             export PRIMARY_HANDLE=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('primary_handle', ''))")
             export KEY_HANDLE=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('key_handle', ''))")
             echo "Read metadata: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
-            
+
             # Verify handles still exist
             if [[ -n "$PRIMARY_HANDLE" && -n "$KEY_HANDLE" ]] && handle_exists "$PRIMARY_HANDLE" && handle_exists "$KEY_HANDLE"; then
                 return 0
             else
-                echo "Stored handles no longer exist, regenerating..."
+                echo "Stored handles no longer exist in TPM, need to regenerate..."
                 return 1
             fi
         else
@@ -130,7 +130,7 @@ create_primary_if_needed() {
     if ! handle_exists "$PRIMARY_HANDLE"; then
         echo "Creating primary key ($PRIMARY_HANDLE)..."
         run_checked tpm2_createprimary -C o -g sha256 -G ecc -c /dev/shm/primary.ctx
-        
+
         # Try to evict, if TPM full then fail gracefully
         if ! tpm2_evictcontrol -C o -c /dev/shm/primary.ctx "$PRIMARY_HANDLE" 2>/dev/null; then
             echo "TPM storage full - cannot create persistent handle"
@@ -174,11 +174,33 @@ fi
 echo "Setting up TPM-backed Yggdrasil config in RAM..."
 
 if read_metadata; then
-    echo "Using previously stored handles"
+    echo "Using previously stored handles: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
 else
-    echo "Generating fresh TPM handles..."
-    
+    echo "Need to generate new TPM handles..."
+
+    # BUGFIX: Clean up old handles if metadata exists but handles are gone
+    if [[ -f "$METADATA_FILE" ]]; then
+        echo "Old metadata found but handles missing - cleaning up..."
+        OLD_PRIMARY=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('primary_handle', ''))" 2>/dev/null || echo "")
+        OLD_KEY=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('key_handle', ''))" 2>/dev/null || echo "")
+
+        # Try to evict old handles if they somehow still exist
+        if [[ -n "$OLD_PRIMARY" ]] && handle_exists "$OLD_PRIMARY"; then
+            echo "Evicting stale primary handle: $OLD_PRIMARY"
+            tpm2_evictcontrol -C o -c "$OLD_PRIMARY" 2>/dev/null || true
+        fi
+        if [[ -n "$OLD_KEY" ]] && handle_exists "$OLD_KEY"; then
+            echo "Evicting stale key handle: $OLD_KEY"
+            tpm2_evictcontrol -C o -c "$OLD_KEY" 2>/dev/null || true
+        fi
+
+        # Remove stale metadata
+        rm -f "$METADATA_FILE"
+        echo "Stale metadata cleaned up"
+    fi
+
     # Generate unique handles with collision avoidance
+    echo "Generating new random handles..."
     PRIMARY_HANDLE=$(generate_random_handle)
     attempts=0
     while handle_exists "$PRIMARY_HANDLE"; do
@@ -200,7 +222,7 @@ else
         KEY_HANDLE=$(generate_random_handle)
         ((attempts++))
     done
-    
+
     echo "Generated handles: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
 fi
 
