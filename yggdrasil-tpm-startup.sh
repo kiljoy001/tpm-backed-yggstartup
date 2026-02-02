@@ -1,28 +1,34 @@
 #!/bin/bash
 #
-# TPM-Secured Yggdrasil Launcher - Fixed Version
+# TPM-Secured Yggdrasil Launcher - v2 (With DB & Recovery)
 #
 # This script provides enhanced security for Yggdrasil by:
 # - Storing private keys in TPM hardware
 # - Using in-memory configuration only
 # - Securely cleaning up sensitive data
-# - Using random TPM handles for unpredictability
+# - Managing TPM handles via SQLite to prevent "full" errors
+# - Generating BIP-39 recovery phrases
 
 # Exit on error, unbound variable, and pipe failures
 set -euo pipefail
 trap 'echo "Script failed at line $LINENO"; cleanup_on_error; exit 1' ERR
 
 TPM_DIR="/run/yggdrasil"
-METADATA_FILE="$TPM_DIR/tpm-handles.json"
+DB_SCRIPT_PATH="tpm_db.py"
 LOCK_FILE="/run/yggdrasil/yggdrasil-tpm.lock"
-TMP_CONFIG_PATH="/dev/shm/yggdrasil.conf"
-TEMP_KEY_FILE=$(mktemp -p /dev/shm)
-chmod 600 "$TEMP_KEY_FILE"
+
+# Initialize global variables for cleanup
+SECURE_DIR=""
+MAPPER_NAME=""
+RAM_IMG=""
 
 # Ensure only one instance runs
 acquire_lock() {
     local timeout=30
     local count=0
+
+    # Ensure runtime dir exists
+    mkdir -p "$TPM_DIR"
 
     while ! mkdir "$LOCK_FILE" 2>/dev/null; do
         if [[ $count -ge $timeout ]]; then
@@ -41,14 +47,23 @@ acquire_lock() {
 
 cleanup_on_error() {
     echo "Cleaning up after error..."
-    shred -u "$TEMP_KEY_FILE" /dev/shm/primary.ctx /dev/shm/key.* 2>/dev/null || true
+    if [[ -n "$SECURE_DIR" ]]; then
+        teardown_vault "$SECURE_DIR" "$MAPPER_NAME" "$RAM_IMG"
+    fi
     rm -rf "$LOCK_FILE" 2>/dev/null || true
 }
 
-trap 'shred -u "$TEMP_KEY_FILE" /dev/shm/primary.ctx /dev/shm/key.* 2>/dev/null || true; rm -rf "$LOCK_FILE" 2>/dev/null || true' EXIT
+trap 'cleanup_on_error' ERR
+trap 'teardown_vault "$SECURE_DIR" "$MAPPER_NAME" "$RAM_IMG"; rm -rf "$LOCK_FILE" 2>/dev/null || true' EXIT
 
-mkdir -p "$TPM_DIR"
 acquire_lock
+
+# --- Initialize DB ---
+"$DB_SCRIPT_PATH" --init
+
+# --- Cleanup Logic (Garbage Collection) ---
+echo "Checking for inactive handles..."
+"$DB_SCRIPT_PATH" --gc
 
 PRIMARY_HANDLE=""
 KEY_HANDLE=""
@@ -69,75 +84,26 @@ generate_random_handle() {
 handle_exists() {
     local handle_uppercase
     handle_uppercase=$(echo "$1" | tr 'a-f' 'A-F')
+    # Use -s (system) or check for empty if tpm2_getcap fails
     tpm2_getcap handles-persistent 2>/dev/null | grep -q "$handle_uppercase"
-}
-
-store_metadata() {
-    echo "Storing metadata: Primary=$1, Key=$2"
-    local temp_metadata="$METADATA_FILE.tmp"
-    cat > "$temp_metadata" <<EOF
-{
-  "primary_handle": "$1",
-  "key_handle": "$2",
-  "created_at": $(date +%s),
-  "hostname": "$(hostname)",
-  "user": "$(whoami)"
-}
-EOF
-    chmod 600 "$temp_metadata"
-    mv "$temp_metadata" "$METADATA_FILE"
-    echo "Metadata stored at $METADATA_FILE"
-}
-
-monitor_and_cleanup() {
-    local pid=$1
-    local config_path=$2
-
-    while kill -0 "$pid" 2>/dev/null; do
-        sleep 2
-    done
-
-    echo "Yggdrasil exited (PID $pid), securely deleting config..."
-    shred -u "$config_path" 2>/dev/null || true
-}
-
-read_metadata() {
-    if [[ -f "$METADATA_FILE" ]]; then
-        # Validate JSON and extract values safely
-        if python3 -m json.tool "$METADATA_FILE" >/dev/null 2>&1; then
-            export PRIMARY_HANDLE=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('primary_handle', ''))")
-            export KEY_HANDLE=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('key_handle', ''))")
-            echo "Read metadata: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
-
-            # Verify handles still exist
-            if [[ -n "$PRIMARY_HANDLE" && -n "$KEY_HANDLE" ]] && handle_exists "$PRIMARY_HANDLE" && handle_exists "$KEY_HANDLE"; then
-                return 0
-            else
-                echo "Stored handles no longer exist in TPM, need to regenerate..."
-                return 1
-            fi
-        else
-            echo "Invalid metadata file, regenerating..."
-            rm -f "$METADATA_FILE"
-            return 1
-        fi
-    else
-        return 1
-    fi
 }
 
 create_primary_if_needed() {
     if ! handle_exists "$PRIMARY_HANDLE"; then
         echo "Creating primary key ($PRIMARY_HANDLE)..."
-        run_checked tpm2_createprimary -C o -g sha256 -G ecc -c /dev/shm/primary.ctx
+        run_checked tpm2_createprimary -C o -g sha256 -G ecc -c "$SECURE_DIR/primary.ctx"
 
         # Try to evict, if TPM full then fail gracefully
-        if ! tpm2_evictcontrol -C o -c /dev/shm/primary.ctx "$PRIMARY_HANDLE" 2>/dev/null; then
-            echo "TPM storage full - cannot create persistent handle"
-            echo "Manual cleanup required: tpm2_getcap handles-persistent"
-            exit 1
+        if ! tpm2_evictcontrol -C o -c "$SECURE_DIR/primary.ctx" "$PRIMARY_HANDLE" 2>/dev/null; then
+            echo "TPM storage full - cannot create persistent handle."
+            echo "Attempting emergency cleanup..."
+            "$DB_SCRIPT_PATH" --gc
+            if ! tpm2_evictcontrol -C o -c "$SECURE_DIR/primary.ctx" "$PRIMARY_HANDLE" 2>/dev/null; then
+                echo "Still full. Manual intervention required."
+                exit 1
+            fi
         fi
-        rm -f /dev/shm/primary.ctx
+        rm -f "$SECURE_DIR/primary.ctx"
     else
         echo "Primary handle exists: $PRIMARY_HANDLE"
     fi
@@ -147,13 +113,13 @@ seal_key_if_needed() {
     if ! handle_exists "$KEY_HANDLE"; then
         echo "Sealing Yggdrasil key into TPM (handle $KEY_HANDLE)..."
         echo -n "$YGG_KEY" | run_checked tpm2_create -C "$PRIMARY_HANDLE" -i- \
-            -u /dev/shm/key.pub -r /dev/shm/key.priv
+            -u "$SECURE_DIR/key.pub" -r "$SECURE_DIR/key.priv"
 
-        run_checked tpm2_load -C "$PRIMARY_HANDLE" -u /dev/shm/key.pub \
-            -r /dev/shm/key.priv -c /dev/shm/key.ctx
+        run_checked tpm2_load -C "$PRIMARY_HANDLE" -u "$SECURE_DIR/key.pub" \
+            -r "$SECURE_DIR/key.priv" -c "$SECURE_DIR/key.ctx"
 
-        run_checked tpm2_evictcontrol -C o -c /dev/shm/key.ctx "$KEY_HANDLE"
-        rm -f /dev/shm/key.*
+        run_checked tpm2_evictcontrol -C o -c "$SECURE_DIR/key.ctx" "$KEY_HANDLE"
+        rm -f "$SECURE_DIR"/key.*
     else
         echo "Key handle exists: $KEY_HANDLE"
     fi
@@ -164,107 +130,206 @@ unseal_key() {
     run_checked tpm2_unseal -c "$KEY_HANDLE" > "$TEMP_KEY_FILE"
 }
 
-# Check if Yggdrasil is already running
-if pgrep -f "yggdrasil.*useconffile" >/dev/null; then
-    echo "Yggdrasil already running with TPM config"
-    exit 0
-fi
+# Monitor the Yggdrasil process and cleanup when it exits
+monitor_and_cleanup() {
+    local pid=$1
+    local config=$2
+    
+    # Wait for the process to exit
+    tail --pid=$pid -f /dev/null
+    
+    echo "Yggdrasil process $pid exited."
+    
+    # Cleanup secure config from memory
+    shred -u "$config" 2>/dev/null || rm -f "$config"
+    
+    # Release lock
+    rm -rf "$LOCK_FILE"
+}
 
-# Main execution
-echo "Setting up TPM-backed Yggdrasil config in RAM..."
+# --- Lux9 Secure Vault Integration ---
 
-if read_metadata; then
-    echo "Using previously stored handles: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
-else
-    echo "Need to generate new TPM handles..."
+setup_vault() {
+    local handle="$1"
+    
+    echo "Deriving Holographic ID from TPM Identity + System State..."
+    
+    # 1. Get TPM Object "Name" (The Identity)
+    local name_hex
+    name_hex=$(run_checked tpm2_readpublic -c "$handle" | grep "name:" | awk '{print $2}')
+    
+    # 2. Get System State (PCR 0=BIOS, PCR 7=SecureBoot)
+    # We strip spaces/newlines to get a raw consistent string
+    local pcr_state
+    pcr_state=$(run_checked tpm2_pcrread sha256:0,7 | grep -v "sha256:" | tr -d ' \n\r')
+    
+    echo "  Identity: $name_hex"
+    echo "  PCR State: sha256:0,7 (BIOS + SecureBoot)"
+    
+    # 3. H(Identity | State)
+    # This ensures the vault "vanishes" if the machine is tampered with
+    local vault_seed
+    vault_seed=$(echo -n "${name_hex}${pcr_state}" | sha256sum | head -c 32)
+    
+    # Generate Hidden ID (Mount Point)
+    # Using 'lux_manager' from PATH
+    local hidden_id
+    hidden_id=$(echo -n "$vault_seed" | lux_manager gen-id-from-seed)
+    SECURE_DIR="/run/$hidden_id"
+    
+    echo "target: $SECURE_DIR"
 
-    # BUGFIX: Clean up old handles if metadata exists but handles are gone
-    if [[ -f "$METADATA_FILE" ]]; then
-        echo "Old metadata found but handles missing - cleaning up..."
-        OLD_PRIMARY=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('primary_handle', ''))" 2>/dev/null || echo "")
-        OLD_KEY=$(python3 -c "import json; data=json.load(open('$METADATA_FILE')); print(data.get('key_handle', ''))" 2>/dev/null || echo "")
-
-        # Try to evict old handles if they somehow still exist
-        if [[ -n "$OLD_PRIMARY" ]] && handle_exists "$OLD_PRIMARY"; then
-            echo "Evicting stale primary handle: $OLD_PRIMARY"
-            tpm2_evictcontrol -C o -c "$OLD_PRIMARY" 2>/dev/null || true
-        fi
-        if [[ -n "$OLD_KEY" ]] && handle_exists "$OLD_KEY"; then
-            echo "Evicting stale key handle: $OLD_KEY"
-            tpm2_evictcontrol -C o -c "$OLD_KEY" 2>/dev/null || true
-        fi
-
-        # Remove stale metadata
-        rm -f "$METADATA_FILE"
-        echo "Stale metadata cleaned up"
+    # Define Vault Parameters
+    RAM_IMG="/dev/shm/$hidden_id.img"
+    MAPPER_NAME="ygg_vault_$hidden_id"
+    
+    # Check if already mounted (idempotency)
+    if mountpoint -q "$SECURE_DIR"; then
+        echo "Vault already active at $SECURE_DIR"
+        return
     fi
 
-    # Generate unique handles with collision avoidance
-    echo "Generating new random handles..."
+    echo "Initializing Secure RAM Vault..."
+    
+    # Create backing store (64MB RAM)
+    truncate -s 64M "$RAM_IMG"
+    chmod 600 "$RAM_IMG"
+    
+    # Encrypt with Ephemeral Key (Monocypher -> Kernel)
+    # Using random key for the volume itself (Forward Secrecy)
+    # Using 'lux_manager' from PATH
+    lux_manager gen-key | cryptsetup open --type plain \
+        --cipher aes-xts-plain64 \
+        --key-file - \
+        "$RAM_IMG" "$MAPPER_NAME"
+        
+    # Format
+    mkfs.ext4 -q -O "^has_journal" "/dev/mapper/$MAPPER_NAME"
+    
+    # Mount
+    mkdir -p "$SECURE_DIR"
+    chmod 700 "$SECURE_DIR"
+    /bin/mount -t ext4 "/dev/mapper/$MAPPER_NAME" "$SECURE_DIR"
+    
+    # Cleanup trap needs to know about these new variables
+    trap "teardown_vault '$SECURE_DIR' '$MAPPER_NAME' '$RAM_IMG'; rm -rf '$LOCK_FILE' 2>/dev/null || true" EXIT
+}
+
+teardown_vault() {
+    local mount_point="$1"
+    local mapper_name="$2"
+    local img_path="$3"
+    
+    echo "Tearing down vault..."
+    
+    if [[ -n "$mount_point" ]] && mountpoint -q "$mount_point"; then
+        # Wipe contents before unmount (extra paranoia)
+        find "$mount_point" -type f -exec shred -u {} \; 2>/dev/null || true
+        umount "$mount_point"
+        rmdir "$mount_point" 2>/dev/null || true
+    fi
+    
+    if [[ -n "$mapper_name" ]] && [ -e "/dev/mapper/$mapper_name" ]; then
+        cryptsetup close "$mapper_name"
+    fi
+    
+    if [[ -n "$img_path" ]]; then
+        rm -f "$img_path"
+    fi
+}
+
+# --- State Management ---
+
+# Check database for active configuration
+ACTIVE_STATE=$("$DB_SCRIPT_PATH" --get-active)
+FOUND_ACTIVE=$(echo "$ACTIVE_STATE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('found'))")
+
+if [[ "$FOUND_ACTIVE" == "True" ]]; then
+    PRIMARY_HANDLE=$(echo "$ACTIVE_STATE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('primary_handle'))")
+    KEY_HANDLE=$(echo "$ACTIVE_STATE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('key_handle'))")
+    echo "Resuming with handles: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
+    
+    if ! handle_exists "$PRIMARY_HANDLE" || ! handle_exists "$KEY_HANDLE"; then
+        echo "Handles missing from TPM despite DB record. Resetting..."
+        "$DB_SCRIPT_PATH" --mark-inactive "$PRIMARY_HANDLE"
+        FOUND_ACTIVE="False"
+    fi
+fi
+
+if [[ "$FOUND_ACTIVE" != "True" ]]; then
+    echo "Generating NEW TPM identity..."
+    
+    # Generate unique handles
     PRIMARY_HANDLE=$(generate_random_handle)
-    attempts=0
-    while handle_exists "$PRIMARY_HANDLE"; do
-        if [[ $attempts -ge 20 ]]; then
-            echo "Too many handle collisions, aborting"
-            exit 1
-        fi
-        PRIMARY_HANDLE=$(generate_random_handle)
-        ((attempts++))
-    done
+    while handle_exists "$PRIMARY_HANDLE"; do PRIMARY_HANDLE=$(generate_random_handle); done
 
     KEY_HANDLE=$(generate_random_handle)
-    attempts=0
-    while handle_exists "$KEY_HANDLE" || [[ "$KEY_HANDLE" == "$PRIMARY_HANDLE" ]]; do
-        if [[ $attempts -ge 20 ]]; then
-            echo "Too many handle collisions for key handle"
-            exit 1
-        fi
-        KEY_HANDLE=$(generate_random_handle)
-        ((attempts++))
-    done
+    while handle_exists "$KEY_HANDLE" || [[ "$KEY_HANDLE" == "$PRIMARY_HANDLE" ]]; do KEY_HANDLE=$(generate_random_handle); done
 
-    echo "Generated handles: Primary=$PRIMARY_HANDLE, Key=$KEY_HANDLE"
+    # Use a temp dir for initial key generation only
+    SECURE_DIR=$(mktemp -d)
+    create_primary_if_needed
+
+    echo "Generating Yggdrasil config..."
+    run_checked yggdrasil -genconf > "$SECURE_DIR/temp.conf"
+    YGG_KEY=$(awk '/PrivateKey/ {print $2}' "$SECURE_DIR/temp.conf")
+
+    if [[ -z "$YGG_KEY" ]]; then
+        echo "Failed to extract private key from config"
+        exit 1
+    fi
+
+    seal_key_if_needed
+    rm -rf "$SECURE_DIR"
+    
+    # Register in DB
+    "$DB_SCRIPT_PATH" --add "$PRIMARY_HANDLE" "$KEY_HANDLE"
+    
+    echo "----------------------------------------------------------------"
+    echo "WARNING: NEW KEY GENERATED."
+    echo "WRITE DOWN THIS RECOVERY PHRASE. IT WILL NOT BE SHOWN AGAIN."
+    echo "----------------------------------------------------------------"
+    "$DB_SCRIPT_PATH" --to-mnemonic "${YGG_KEY:0:64}"
+    echo "----------------------------------------------------------------"
 fi
 
-create_primary_if_needed
+# Initialize the Lux9 Vault using the Handle Name (Public)
+# We do NOT unseal the private key yet!
+setup_vault "$KEY_HANDLE"
 
-echo "Generating Yggdrasil config in /dev/shm..."
-run_checked yggdrasil -genconf > "$TMP_CONFIG_PATH"
-YGG_KEY=$(awk '/PrivateKey/ {print $2}' "$TMP_CONFIG_PATH")
+# Paths inside the vault
+TMP_CONFIG_PATH="$SECURE_DIR/yggdrasil.conf"
 
-if [[ -z "$YGG_KEY" ]]; then
-    echo "Failed to extract private key from config"
-    exit 1
-fi
+echo "Unsealing Yggdrasil key from TPM directly into Vault..."
+RAW_KEY=$(run_checked tpm2_unseal -c "$KEY_HANDLE")
 
-seal_key_if_needed
-store_metadata "$PRIMARY_HANDLE" "$KEY_HANDLE"
-
-# Backward compatibility for brunnen-cli.sh
-echo "$KEY_HANDLE" > /dev/shm/handle.txt
-
-unseal_key
-PRIVATE_KEY=$(cat "$TEMP_KEY_FILE")
-
-if [[ -z "$PRIVATE_KEY" ]]; then
+if [[ -z "$RAW_KEY" ]]; then
     echo "Failed to unseal private key"
     exit 1
 fi
 
 echo "Injecting private key into Yggdrasil config..."
-sed "s/PrivateKey: .*/PrivateKey: $PRIVATE_KEY/" "$TMP_CONFIG_PATH" > "$TMP_CONFIG_PATH.new"
-mv "$TMP_CONFIG_PATH.new" "$TMP_CONFIG_PATH"
+run_checked yggdrasil -genconf > "$TMP_CONFIG_PATH"
+sed -i "s/PrivateKey: .*/PrivateKey: $RAW_KEY/" "$TMP_CONFIG_PATH"
 
-echo "Launching Yggdrasil with in-memory config..."
+# Wipe the variable from memory immediately
+RAW_KEY=""
 
-# Wait for Yggdrasil to start, then exec into it
+echo "Launching Yggdrasil..."
+
+# Check if already running (re-check inside lock)
+if pgrep -f "yggdrasil.*useconffile" >/dev/null; then
+    echo "Yggdrasil already running."
+    exit 0
+fi
+
 yggdrasil -useconffile "$TMP_CONFIG_PATH" &
 YGG_PID=$!
 
 # Wait for socket
 for i in {1..5}; do
     if [[ -S /var/run/yggdrasil.sock ]]; then
-        echo "Yggdrasil started successfully"
+        echo "Yggdrasil started successfully at $SECURE_DIR"
         break
     fi
     sleep 1
@@ -276,6 +341,6 @@ monitor_and_cleanup "$YGG_PID" "$TMP_CONFIG_PATH" &
 echo "Yggdrasil TPM setup complete!"
 echo "Primary handle: $PRIMARY_HANDLE"
 echo "Key handle: $KEY_HANDLE"
+echo "Vault location: $SECURE_DIR (Hidden)"
 
-# Keep script running to maintain systemd service
 wait $YGG_PID
