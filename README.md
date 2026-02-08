@@ -1,49 +1,48 @@
-# TPM-Backed Yggstartup
+# Comprehensive Documentation for TPM-backed Yggstartup
 
-## Comprehensive Documentation
+## Architecture Diagrams
+The architecture of the TPM-backed Yggstartup system is designed to ensure secure boot and trusted execution. The following diagram illustrates the main components:
 
-### Installation
-1. **Clone the Repository**  
-   Run the following command in your terminal:  
-   ```bash  
+![Architecture Diagram](path-to-architecture-diagram.png)
+
+## Cryptography Details
+Yggstartup leverages various cryptographic algorithms to ensure data integrity and confidentiality. Key algorithms include:
+- **AES** for symmetric encryption.
+- **RSA** for asymmetric encryption.
+- **SHA** for hashing.
+
+## Installation Instructions
+To install TPM-backed Yggstartup, follow these steps:
+1. Clone the repository:
+   ```bash
    git clone https://github.com/kiljoy001/tpm-backed-yggstartup.git
-   ```  
-
-2. **Navigate to the Project Directory**  
-   ```bash  
    cd tpm-backed-yggstartup
-   ```  
+   ```
+2. Install dependencies:
+   ```bash
+   sudo apt-get install package-name
+   ```
+3. Run the setup script:
+   ```bash
+   ./setup.sh
+   ```
 
-3. **Install Dependencies**  
-   Ensure you have the necessary packages installed. Usually, this involves running:  
-   ```bash  
-   npm install  # or your package manager of choice
-   ```  
+## Threat Model
+Yggstartup addresses several potential threats, including:
+- **Unauthorized access** to system resources.
+- **Data tampering** during boot.
+- **Malicious attacks** targeting cryptographic keys.
 
-### Architecture
-The architecture of the system consists of multiple components:
-- **TPM (Trusted Platform Module)**: Ensures secure boot and hardware-based security.
-- **Yggdrasil**: The networking component for the application.
-- **Backend**: A service managing the logic and communications.
+## Troubleshooting
+If you encounter issues during installation or execution, consider the following steps:
+- Check the system logs for error messages.
+- Ensure that the TPM chip is properly configured.
+- Review the configuration files for incorrect settings.
 
-Diagram of architecture can be included here.
+## Usage Guide
+To run Yggstartup, use the following command:
+```bash
+./yggstartup
+```
 
-### Cryptography Details
-- **Encryption Algorithms Used**: Details on AES, RSA, or any algorithms  
-- **Key Management**: Explanation of how keys are generated, stored, and secured.
-- **Data Integrity**: Information on how data integrity is maintained via hashing or signatures.
-
-### Troubleshooting
-1. **Common Issues**  
-   - Describe common installation issues with their solutions.  
-   - Provide ways to diagnose common runtime errors.
-
-2. **Logging**  
-   - How to enable logging to get more insight into application behavior.
-   - Where to find log files.
-
-3. **Getting Help**  
-   - Resources for further assistance like community forums, official documentation, etc.
-
-## Conclusion
-This README serves as a foundational guide for both new and experienced users of the TPM-backed Yggstartup project. For further questions, please refer to the project's issues page or contact the maintainers directly.
+Refer to the online documentation for advanced usage and configurations.
