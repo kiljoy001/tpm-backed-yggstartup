@@ -1,41 +1,49 @@
-# TPM-Secured Yggdrasil Launcher
+# TPM-Backed Yggstartup
 
-A security-enhanced deployment tool that protects Yggdrasil networking keys using Trusted Platform Module (TPM) hardware.
+## Comprehensive Documentation
 
-## Requirements
+### Installation
+1. **Clone the Repository**  
+   Run the following command in your terminal:  
+   ```bash  
+   git clone https://github.com/kiljoy001/tpm-backed-yggstartup.git
+   ```  
 
-* Linux system with TPM 2.0 hardware
-* `tpm2-tools` package installed
-* `yggdrasil` networking package
-* Bash shell
-* Write access to create `/tpmdata` directory or configure an alternative path
+2. **Navigate to the Project Directory**  
+   ```bash  
+   cd tpm-backed-yggstartup
+   ```  
 
-## Features
+3. **Install Dependencies**  
+   Ensure you have the necessary packages installed. Usually, this involves running:  
+   ```bash  
+   npm install  # or your package manager of choice
+   ```  
 
-* **Hardware Security**: Stores private keys securely in TPM hardware rather than on disk
-* **In-Memory Configuration**: Runs Yggdrasil with configuration loaded only in RAM
-* **Zero Persistence**: Leaves no sensitive data on disk after shutdown
-* **Secure Cleanup**: Uses military-grade shredding to wipe temporary files
-* **Random TPM Handles**: Generates unpredictable TPM object handles for enhanced security
-* **Fault Tolerance**: Recovers from previous states using stored metadata
+### Architecture
+The architecture of the system consists of multiple components:
+- **TPM (Trusted Platform Module)**: Ensures secure boot and hardware-based security.
+- **Yggdrasil**: The networking component for the application.
+- **Backend**: A service managing the logic and communications.
 
-## How It Works
+Diagram of architecture can be included here.
 
-This script creates a secure environment for Yggdrasil networking by:
+### Cryptography Details
+- **Encryption Algorithms Used**: Details on AES, RSA, or any algorithms  
+- **Key Management**: Explanation of how keys are generated, stored, and secured.
+- **Data Integrity**: Information on how data integrity is maintained via hashing or signatures.
 
-1. Generating or retrieving TPM object handles
-2. Creating a primary TPM key if needed
-3. Generating an ephemeral Yggdrasil configuration in RAM
-4. Sealing the private key into the TPM
-5. Launching Yggdrasil with the secured configuration
-6. Monitoring the process and cleaning up when it exits
+### Troubleshooting
+1. **Common Issues**  
+   - Describe common installation issues with their solutions.  
+   - Provide ways to diagnose common runtime errors.
 
-## Benefits
+2. **Logging**  
+   - How to enable logging to get more insight into application behavior.
+   - Where to find log files.
 
-* Protects against filesystem-based key theft
-* Defends against memory-scraping attacks through secure cleanup
-* Works with standard TPM 2.0 hardware
-* Fully automated operation with error handling
-* Preserves key material across reboots without leaving it exposed
+3. **Getting Help**  
+   - Resources for further assistance like community forums, official documentation, etc.
 
-Ideal for servers and devices that require maximum security for Yggdrasil mesh networking deployments.
+## Conclusion
+This README serves as a foundational guide for both new and experienced users of the TPM-backed Yggstartup project. For further questions, please refer to the project's issues page or contact the maintainers directly.
