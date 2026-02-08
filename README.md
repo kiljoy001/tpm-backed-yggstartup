@@ -1,48 +1,27 @@
-# Comprehensive Documentation for TPM-backed Yggstartup
+# TPM-Backed Yggstartup
 
-## Architecture Diagrams
-The architecture of the TPM-backed Yggstartup system is designed to ensure secure boot and trusted execution. The following diagram illustrates the main components:
+## Overview
+This project focuses on leveraging the Trusted Platform Module (TPM) to create a secure and reliable Yggdrasil-based system startup process. The primary goal is to ensure that the system boots into a trusted environment, relying on cryptographic measures to safeguard integrity and confidentiality.
 
-![Architecture Diagram](path-to-architecture-diagram.png)
+## Architecture
+The architecture of the TPM-Backed Yggstartup system is divided into several key components:
 
-## Cryptography Details
-Yggstartup leverages various cryptographic algorithms to ensure data integrity and confidentiality. Key algorithms include:
-- **AES** for symmetric encryption.
-- **RSA** for asymmetric encryption.
-- **SHA** for hashing.
+- **TPM Chip**: The hardware component that securely stores cryptographic keys and performs hardware-based cryptographic operations.
+- **Boot Loader**: Responsible for loading the operating system while verifying the integrity of the boot sequence using TPM.
+- **Operating System**: The main system that interacts with the underlying hardware and applications.
 
-## Installation Instructions
-To install TPM-backed Yggstartup, follow these steps:
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/kiljoy001/tpm-backed-yggstartup.git
-   cd tpm-backed-yggstartup
-   ```
-2. Install dependencies:
-   ```bash
-   sudo apt-get install package-name
-   ```
-3. Run the setup script:
-   ```bash
-   ./setup.sh
-   ```
+### Architecture Diagram
+![Architecture Diagram](link_to_architecture_diagram)
 
-## Threat Model
-Yggstartup addresses several potential threats, including:
-- **Unauthorized access** to system resources.
-- **Data tampering** during boot.
-- **Malicious attacks** targeting cryptographic keys.
+## Component Responsibilities
+- **TPM**: Stores sensitive keys securely; provides hardware-level security features.
+- **Boot Loader**: Validates the integrity of the code being loaded and measures the state of the boot process; interacts with the TPM for secure key operations.
+- **Operating System**: Runs applications and manages resources while maintaining security policies enforced by the TPM.
 
-## Troubleshooting
-If you encounter issues during installation or execution, consider the following steps:
-- Check the system logs for error messages.
-- Ensure that the TPM chip is properly configured.
-- Review the configuration files for incorrect settings.
+## Cryptographic Explanations
+- **Key Generation**: Keys are generated securely within the TPM to ensure that they are not exposed to the outside environment.
+- **Measurements**: Each component's state is measured and recorded in the TPM to create a secure chain of trust.
+- **Attestation**: The TPM can attest to the authenticity of the boot process to remote parties, providing a verification mechanism for third-party services.
 
-## Usage Guide
-To run Yggstartup, use the following command:
-```bash
-./yggstartup
-```
-
-Refer to the online documentation for advanced usage and configurations.
+## Conclusion
+The TPM-Backed Yggstartup project combines hardware and software security measures to provide a robust solution for secure system initialization. By leveraging the TPM, we can ensure that our system remains secure from the moment it is powered on, through its boot process, and into its operational state.
